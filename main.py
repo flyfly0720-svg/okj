@@ -200,3 +200,121 @@ st.markdown("---")
 st.caption("⚠️ 본 서비스는 정보 제공용이며 실제 응급상황에서는 119 신고가 최우선입니다.")
 
 
+pip install streamlit folium streamlit-folium
+
+import streamlit as st
+import folium
+from streamlit_folium import st_folium
+
+# -------------------------------
+# 🏥 응급실 병원 데이터 (좌표 + 환자 현황)
+# -------------------------------
+ER_HOSPITALS = [
+    {
+        "name": "🚨 서울대병원 응급실",
+        "lat": 37.579617,
+        "lon": 126.997649,
+        "beds": 50,
+        "current": 42,
+        "status": "혼잡 😰"
+    },
+    {
+        "name": "⚡ 세브란스병원 응급실",
+        "lat": 37.562366,
+        "lon": 126.939611,
+        "beds": 60,
+        "current": 28,
+        "status": "여유 🙂"
+    },
+    {
+        "name": "🏥 고려대안암병원 응급실",
+        "lat": 37.586580,
+        "lon": 127.026210,
+        "beds": 45,
+        "current": 39,
+        "status": "보통 😐"
+    }
+]
+
+# -------------------------------
+# 🖥️ 페이지 설정
+# -------------------------------
+st.set_page_config(
+    page_title="🚨 응급실 실시간 조회",
+    page_icon="🚑",
+    layout="wide"
+)
+
+st.title("🚨 응급실 긴급 조회 시스템")
+st.caption("위급할수록 빠르게 ⚡ 정확하게 🎯")
+
+st.markdown("---")
+
+# -------------------------------
+# 🔴 응급실 버튼
+# -------------------------------
+emergency_click = st.button(
+    "🔴 응급실 찾기 (지도 + 현황)",
+    use_container_width=True
+)
+
+# -------------------------------
+# 🔎 버튼 클릭 시
+# -------------------------------
+if emergency_click:
+    st.markdown("## 🗺️ 주변 응급실 지도")
+
+    # 📍 지도 중심 (서울 기준)
+    m = folium.Map(location=[37.5665, 126.9780], zoom_start=12)
+
+    for h in ER_HOSPITALS:
+        # 혼잡도 색상
+        if h["current"] / h["beds"] > 0.85:
+            color = "red"
+        elif h["current"] / h["beds"] > 0.6:
+            color = "orange"
+        else:
+            color = "green"
+
+        popup_text = f"""
+        <b>{h['name']}</b><br>
+        🛏️ 총 병상: {h['beds']}<br>
+        👥 현재 환자: {h['current']}<br>
+        🚦 상태: {h['status']}
+        """
+
+        folium.Marker(
+            location=[h["lat"], h["lon"]],
+            popup=popup_text,
+            icon=folium.Icon(color=color, icon="plus-sign")
+        ).add_to(m)
+
+    st_folium(m, width=1200, height=500)
+
+    st.markdown("---")
+    st.markdown("## 📊 응급실 환자 현황")
+
+    for h in ER_HOSPITALS:
+        ratio = h["current"] / h["beds"]
+
+        st.markdown(f"### {h['name']}")
+        st.progress(min(ratio, 1.0))
+        st.write(
+            f"🛏️ 병상: {h['beds']} | "
+            f"👥 환자: {h['current']} | "
+            f"🚦 상태: **{h['status']}**"
+        )
+        st.markdown("")
+
+# -------------------------------
+# 📞 119 고정 안내
+# -------------------------------
+st.markdown("---")
+st.error("""
+📞 **응급 상황 발생 시 즉시 119로 전화하세요**  
+🚒 소방청 119는  
+📍 가장 가까운 응급실 자동 연계  
+🚑 구급차 출동 지원  
+을 제공합니다
+""")
+
