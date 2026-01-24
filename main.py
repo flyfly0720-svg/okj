@@ -318,3 +318,22 @@ st.error("""
 을 제공합니다
 """)
 
+# clean_pip_line.py
+# 🚑 main.py 안에 잘못 들어간 pip install 줄 제거 스크립트
+
+TARGET_FILE = "main.py"
+
+with open(TARGET_FILE, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+cleaned_lines = []
+for line in lines:
+    if "pip install" in line:
+        print(f"🗑️ 삭제됨: {line.strip()}")
+        continue
+    cleaned_lines.append(line)
+
+with open(TARGET_FILE, "w", encoding="utf-8") as f:
+    f.writelines(cleaned_lines)
+
+print("✅ main.py 정리 완료! 이제 Streamlit 실행 가능 🚀")
