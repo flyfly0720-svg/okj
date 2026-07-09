@@ -1,100 +1,147 @@
-import streamlit as st
-import numpy as np
-from mpmath import mp
-import io
-import wave
+"""
+유튜브 조회수 기반 이슈 관심도 변화 분석
+- 이란-이스라엘 전쟁 뉴스 vs 월드컵 개막전 비교
 
-# ---------- 설정값 ----------
-SAMPLE_RATE = 44100
-NOTE_DURATION = 0.4      # 음 하나의 길이(초)
-C4_FREQ = 261.63         # 중간 도(C4) 주파수
+[방법론 주의사항 - 반드시 읽을 것]
+YouTube Data API v3는 개별 영상의 '일별 누적 조회수 변화 이력'을 제공하지 않는다.
+(이는 영상 소유자만 YouTube Studio Analytics에서 볼 수 있는 데이터임)
 
-# 숫자 -> (음이름, C4 기준 반음(semitone) 차이)
-# 1=도, 2=레, 3=미, 4=파, 5=솔, 6=라, 7=시, 8=높은 도, 9=높은 레
-# 0은 1(도) 바로 아래 음으로 이어지도록 낮은 시로 배정
-DIGIT_TO_NOTE = {
-    0: ("시(낮은)", -1),
-    1: ("도", 0),
-    2: ("레", 2),
-    3: ("미", 4),
-    4: ("파", 5),
-    5: ("솔", 7),
-    6: ("라", 9),
-    7: ("시", 11),
-    8: ("도(높은)", 12),
-    9: ("레(높은)", 14),
-}
+따라서 이 스크립트는 대안적 프록시(proxy) 방법을 사용한다:
 
+  같은 이슈를 다룬 여러 영상이 '사건 발생 후 각기 다른 날짜에 업로드'되었다고 보고,
+    x축 = (영상 게시일 - 사건 발생일) = 경과일수
+    y축 = 각 영상의 '현재까지 누적 조회수'
+  로 산점도를 그린다.
 
-def get_pi_decimals(n: int) -> str:
-    """원주율 소수점 n자리를 문자열로 반환"""
-    mp.dps = n + 15  # 오차 방지용 여유 자릿수
-    pi_str = mp.nstr(mp.pi, n + 10, strip_zeros=False)
-    integer_part, decimal_part = pi_str.split(".")
-    return decimal_part[:n]
+  전제 가정: 뉴스 영상은 대부분의 조회수가 업로드 직후 며칠 내에 집중적으로 발생한다
+  (뉴스 콘텐츠 특성상 롱테일보다 초기 집중 조회 비중이 큼).
+  이 가정이 성립한다면 "사건 발생 후 늦게 올라온 영상일수록 조회수가 낮다"는
+  패턴이 FOMO 감쇠 곡선의 근사치가 될 수 있다.
 
+  단, 이는 참된 시계열이 아니라 '업로드 시점별 스냅샷 비교'이므로
+  보고서/세특 서술 시 이 한계를 반드시 명시할 것.
 
-def digit_to_frequency(digit: int) -> float:
-    _, semitone = DIGIT_TO_NOTE[digit]
-    return C4_FREQ * (2 ** (semitone / 12))
+[사전 준비]
+1. https://console.cloud.google.com 접속 → 새 프로젝트 생성
+2. "YouTube Data API v3" 활성화
+3. 사용자 인증 정보 → API 키 발급 (무료, 일일 할당량 있음)
+4. 아래 API_KEY 변수에 붙여넣기
+"""
 
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import platform
 
-def make_tone(freq: float, duration: float, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
-    """사인파 톤 생성 (클릭 노이즈 방지용 페이드 인/아웃 포함)"""
-    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-    wave_data = np.sin(2 * np.pi * freq * t)
+# ---- 한글 폰트 설정 (OS별 분기) ----
+if platform.system() == "Windows":
+    plt.rcParams["font.family"] = "Malgun Gothic"
+elif platform.system() == "Darwin":
+    plt.rcParams["font.family"] = "AppleGothic"
+else:
+    plt.rcParams["font.family"] = "NanumGothic"
+plt.rcParams["axes.unicode_minus"] = False
 
-    fade_len = max(1, int(sample_rate * 0.02))
-    envelope = np.ones_like(wave_data)
-    envelope[:fade_len] = np.linspace(0, 1, fade_len)
-    envelope[-fade_len:] = np.linspace(1, 0, fade_len)
-
-    return wave_data * envelope
+API_KEY = "YOUR_YOUTUBE_API_KEY"  # 여기에 발급받은 키 입력
 
 
-def digits_to_wav_bytes(digits: str) -> bytes:
-    """숫자열을 이어붙인 오디오 -> WAV 바이트로 변환"""
-    audio = np.concatenate([
-        make_tone(digit_to_frequency(int(d)), NOTE_DURATION) for d in digits
-    ])
-    audio = (audio * 32767 * 0.6).astype(np.int16)
+def search_videos(query, published_after, published_before, max_results=50):
+    """키워드로 영상 검색 (게시일 범위 지정, ISO 8601 형식 예: '2025-06-13T00:00:00Z')"""
+    url = "https://www.googleapis.com/youtube/v3/search"
+    videos = []
+    page_token = None
+    while len(videos) < max_results:
+        params = {
+            "part": "snippet",
+            "q": query,
+            "type": "video",
+            "order": "date",
+            "publishedAfter": published_after,
+            "publishedBefore": published_before,
+            "maxResults": min(50, max_results - len(videos)),
+            "regionCode": "KR",
+            "relevanceLanguage": "ko",
+            "key": API_KEY,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        res = requests.get(url, params=params).json()
+        if "error" in res:
+            print("API 오류:", res["error"].get("message"))
+            break
+        for item in res.get("items", []):
+            videos.append({
+                "video_id": item["id"]["videoId"],
+                "title": item["snippet"]["title"],
+                "published_at": item["snippet"]["publishedAt"],
+            })
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+    return videos
 
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(audio.tobytes())
-    return buf.getvalue()
+
+def get_view_counts(video_ids):
+    """영상 ID 리스트로 조회수 일괄 조회 (최대 50개씩 배치)"""
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    results = {}
+    for i in range(0, len(video_ids), 50):
+        chunk = video_ids[i:i + 50]
+        params = {"part": "statistics", "id": ",".join(chunk), "key": API_KEY}
+        res = requests.get(url, params=params).json()
+        for item in res.get("items", []):
+            results[item["id"]] = int(item["statistics"].get("viewCount", 0))
+    return results
 
 
-# ---------- Streamlit UI ----------
-st.set_page_config(page_title="원주율 음계 변환기", page_icon="🎵")
-st.title("🎵 원주율(π)을 음계로 듣기")
-st.write(
-    "원주율의 소수점 자리를 음계로 변환합니다. "
-    "(1=도, 2=레, 3=미, 4=파, 5=솔, 6=라, 7=시, 8=높은도, 9=높은레, 0=낮은시)"
-)
+def build_dataframe(query, published_after, published_before, event_date):
+    videos = search_videos(query, published_after, published_before)
+    if not videos:
+        print(f"'{query}' 검색 결과 없음 - 쿼리/기간 확인 필요")
+        return pd.DataFrame()
+    view_counts = get_view_counts([v["video_id"] for v in videos])
+    df = pd.DataFrame(videos)
+    df["views"] = df["video_id"].map(view_counts)
+    df["published_at"] = pd.to_datetime(df["published_at"]).dt.tz_localize(None)
+    event_dt = pd.to_datetime(event_date)
+    df["days_since_event"] = (df["published_at"] - event_dt).dt.days
+    return df.sort_values("days_since_event")
 
-digits_count = st.slider("소수점 몇째 자리까지 들을까요?", min_value=5, max_value=100, value=50)
 
-pi_decimals = get_pi_decimals(digits_count)
-
-st.subheader("π 소수점 값")
-st.code(f"3.{pi_decimals}")
-
-note_sequence = [DIGIT_TO_NOTE[int(d)][0] for d in pi_decimals]
-st.subheader("음계 시퀀스")
-st.write(" - ".join(note_sequence))
-
-if st.button("🎶 소리 생성하기"):
-    with st.spinner("소리를 만드는 중..."):
-        wav_bytes = digits_to_wav_bytes(pi_decimals)
-    st.audio(wav_bytes, format="audio/wav")
-    st.download_button(
-        label="⬇️ WAV 파일 다운로드",
-        data=wav_bytes,
-        file_name=f"pi_{digits_count}digits_music.wav",
-        mime="audio/wav",
+if __name__ == "__main__":
+    # ---- 실제 사건 날짜로 반드시 수정할 것 ----
+    iran_israel_df = build_dataframe(
+        query="이란 이스라엘 전쟁",
+        published_after="2025-06-13T00:00:00Z",   # 사건 발생일로 수정
+        published_before="2025-07-13T00:00:00Z",   # 관찰 종료일로 수정
+        event_date="2025-06-13",
     )
 
+    worldcup_df = build_dataframe(
+        query="월드컵 개막전",
+        published_after="2026-06-11T00:00:00Z",   # 실제 개막일로 수정
+        published_before="2026-07-11T00:00:00Z",
+        event_date="2026-06-11",
+    )
+
+    if not iran_israel_df.empty:
+        iran_israel_df.to_csv("iran_israel_views.csv", index=False, encoding="utf-8-sig")
+    if not worldcup_df.empty:
+        worldcup_df.to_csv("worldcup_views.csv", index=False, encoding="utf-8-sig")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    if not iran_israel_df.empty:
+        ax.scatter(iran_israel_df["days_since_event"], iran_israel_df["views"],
+                   label="이란-이스라엘 전쟁 뉴스", alpha=0.7)
+    if not worldcup_df.empty:
+        ax.scatter(worldcup_df["days_since_event"], worldcup_df["views"],
+                   label="월드컵 개막전", alpha=0.7)
+    ax.set_xlabel("사건 발생 후 경과일수 (영상 게시일 기준)")
+    ax.set_ylabel("영상 누적 조회수 (log scale)")
+    ax.set_title("이슈별 유튜브 조회수 비교 — 업로드 시점 스냅샷 프록시")
+    ax.set_yscale("log")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig("youtube_comparison.png", dpi=150)
+    plt.show()
