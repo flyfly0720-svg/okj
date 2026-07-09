@@ -145,3 +145,60 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig("youtube_comparison.png", dpi=150)
     plt.show()
+"""
+Google Trends 기반 실시간 관심도 시계열 비교
+(FOMO 감쇠 곡선 분석용 - 유튜브 스냅샷 프록시보다 방법론적으로 더 적합)
+
+[핵심 차이 - 보고서에 명시할 것]
+- 유튜브 조회수 = 실제 시청/클릭 행동 지표, 하지만 시계열 접근 불가 (스냅샷만 가능)
+- 구글 트렌드 = '검색 행동' 지표, 조회수는 아니지만 실제 일별 시계열 제공
+두 지표는 서로 다른 종류의 관심도를 측정하므로, "유튜브 조회수와 직접 비교"가 아니라
+"관심도 감쇠 패턴이라는 공통 현상을 서로 다른 각도에서 보여주는 보조 자료"로
+위치시켜 서술하는 것이 방법론적으로 안전함.
+
+[사전 준비]
+pip install pytrends
+"""
+
+from pytrends.request import TrendReq
+import matplotlib.pyplot as plt
+import platform
+
+# ---- 한글 폰트 설정 ----
+if platform.system() == "Windows":
+    plt.rcParams["font.family"] = "Malgun Gothic"
+elif platform.system() == "Darwin":
+    plt.rcParams["font.family"] = "AppleGothic"
+else:
+    plt.rcParams["font.family"] = "NanumGothic"
+plt.rcParams["axes.unicode_minus"] = False
+
+pytrends = TrendReq(hl="ko-KR", tz=540)
+
+
+def get_trend(keyword, timeframe, geo="KR"):
+    pytrends.build_payload([keyword], timeframe=timeframe, geo=geo)
+    df = pytrends.interest_over_time()
+    if df.empty:
+        print(f"'{keyword}' 데이터 없음 - timeframe/geo 확인 필요")
+        return None
+    return df[keyword]
+
+
+if __name__ == "__main__":
+    # ---- 실제 사건 날짜 범위로 수정할 것 (timeframe 형식: 'YYYY-MM-DD YYYY-MM-DD') ----
+    series1 = get_trend("이란 이스라엘", "2025-06-01 2025-08-01")
+    series2 = get_trend("월드컵", "2026-06-01 2026-08-01")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    if series1 is not None:
+        ax.plot(range(len(series1)), series1.values, label="이란-이스라엘 전쟁 (검색 관심도)")
+    if series2 is not None:
+        ax.plot(range(len(series2)), series2.values, label="월드컵 개막전 (검색 관심도)")
+    ax.set_xlabel("사건 발생 후 경과일수")
+    ax.set_ylabel("구글 트렌드 상대적 관심도 (0-100)")
+    ax.set_title("이슈별 대중 관심도 감쇠 곡선 비교 (Google Trends)")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig("trends_comparison.png", dpi=150)
+    plt.show()
