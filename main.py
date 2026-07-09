@@ -1,104 +1,100 @@
 import streamlit as st
-import matplotlib.pyplot as plt
+import numpy as np
+from mpmath import mp
+import io
+import wave
 
-st.set_page_config(page_title="비만치료제의 나비효과", layout="wide")
+# ---------- 설정값 ----------
+SAMPLE_RATE = 44100
+NOTE_DURATION = 0.4      # 음 하나의 길이(초)
+C4_FREQ = 261.63         # 중간 도(C4) 주파수
 
-# 제목
-st.title("🦋 비만치료제의 나비효과")
-st.subheader("위고비 · 삭센다 · 마운자로 · 오젬픽이 바꾸는 연쇄적 변화")
+# 숫자 -> (음이름, C4 기준 반음(semitone) 차이)
+# 1=도, 2=레, 3=미, 4=파, 5=솔, 6=라, 7=시, 8=높은 도, 9=높은 레
+# 0은 1(도) 바로 아래 음으로 이어지도록 낮은 시로 배정
+DIGIT_TO_NOTE = {
+    0: ("시(낮은)", -1),
+    1: ("도", 0),
+    2: ("레", 2),
+    3: ("미", 4),
+    4: ("파", 5),
+    5: ("솔", 7),
+    6: ("라", 9),
+    7: ("시", 11),
+    8: ("도(높은)", 12),
+    9: ("레(높은)", 14),
+}
 
-st.markdown("""
-GLP-1 계열 비만치료제는 단순한 체중 감소를 넘어  
-**의학 · 산업 · 사회 구조 전반에 파급 효과를 유발**한다.  
-이 앱은 그 변화를 *나비효과* 관점에서 시각화한다.
-""")
 
-# 약물 선택
-drug = st.selectbox(
-    "비만치료제를 선택하세요",
-    ["위고비 (Wegovy)", "삭센다 (Saxenda)", "마운자로 (Mounjaro)", "오젬픽 (Ozempic)"]
+def get_pi_decimals(n: int) -> str:
+    """원주율 소수점 n자리를 문자열로 반환"""
+    mp.dps = n + 15  # 오차 방지용 여유 자릿수
+    pi_str = mp.nstr(mp.pi, n + 10, strip_zeros=False)
+    integer_part, decimal_part = pi_str.split(".")
+    return decimal_part[:n]
+
+
+def digit_to_frequency(digit: int) -> float:
+    _, semitone = DIGIT_TO_NOTE[digit]
+    return C4_FREQ * (2 ** (semitone / 12))
+
+
+def make_tone(freq: float, duration: float, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """사인파 톤 생성 (클릭 노이즈 방지용 페이드 인/아웃 포함)"""
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    wave_data = np.sin(2 * np.pi * freq * t)
+
+    fade_len = max(1, int(sample_rate * 0.02))
+    envelope = np.ones_like(wave_data)
+    envelope[:fade_len] = np.linspace(0, 1, fade_len)
+    envelope[-fade_len:] = np.linspace(1, 0, fade_len)
+
+    return wave_data * envelope
+
+
+def digits_to_wav_bytes(digits: str) -> bytes:
+    """숫자열을 이어붙인 오디오 -> WAV 바이트로 변환"""
+    audio = np.concatenate([
+        make_tone(digit_to_frequency(int(d)), NOTE_DURATION) for d in digits
+    ])
+    audio = (audio * 32767 * 0.6).astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio.tobytes())
+    return buf.getvalue()
+
+
+# ---------- Streamlit UI ----------
+st.set_page_config(page_title="원주율 음계 변환기", page_icon="🎵")
+st.title("🎵 원주율(π)을 음계로 듣기")
+st.write(
+    "원주율의 소수점 자리를 음계로 변환합니다. "
+    "(1=도, 2=레, 3=미, 4=파, 5=솔, 6=라, 7=시, 8=높은도, 9=높은레, 0=낮은시)"
 )
 
-# 약물별 기본 정보
-drug_info = {
-    "위고비 (Wegovy)": "주 1회 투여 GLP-1 작용제, 강력한 식욕 억제와 체중 감소 효과",
-    "삭센다 (Saxenda)": "매일 투여, 비교적 초기 세대 GLP-1 비만치료제",
-    "마운자로 (Mounjaro)": "GLP-1 + GIP 이중 작용, 체중 감소 효과가 가장 큼",
-    "오젬픽 (Ozempic)": "당뇨 치료제로 개발되었으나 비만 치료에 파급 효과 발생"
-}
+digits_count = st.slider("소수점 몇째 자리까지 들을까요?", min_value=5, max_value=100, value=50)
 
-st.markdown(f"### 💊 {drug}")
-st.write(drug_info[drug])
+pi_decimals = get_pi_decimals(digits_count)
 
-# 나비효과 단계
-st.markdown("## 🔄 비만치료제의 나비효과 구조")
+st.subheader("π 소수점 값")
+st.code(f"3.{pi_decimals}")
 
-effects = {
-    "개인": [
-        "식욕 감소",
-        "체중 감소",
-        "혈당·혈압·지질 수치 개선",
-        "자기효능감 증가"
-    ],
-    "의료 시스템": [
-        "당뇨·고혈압·심혈관 질환 유병률 감소",
-        "의료비 지출 구조 변화",
-        "예방의학 중심 패러다임 강화"
-    ],
-    "산업": [
-        "식품 산업의 저당·저열량 제품 확대",
-        "헬스케어·바이오 산업 투자 급증",
-        "보험·제약 시장 재편"
-    ],
-    "사회·문화": [
-        "비만에 대한 인식 변화",
-        "외모 중심 문화의 재구성",
-        "노동 생산성 및 결근율 변화"
-    ]
-}
+note_sequence = [DIGIT_TO_NOTE[int(d)][0] for d in pi_decimals]
+st.subheader("음계 시퀀스")
+st.write(" - ".join(note_sequence))
 
-cols = st.columns(4)
-for col, (stage, items) in zip(cols, effects.items()):
-    with col:
-        st.markdown(f"### {stage}")
-        for item in items:
-            st.write(f"- {item}")
-
-# 시각화
-st.markdown("## 📊 체중 감소로 인한 연쇄 효과 개념도")
-
-x = [0, 1, 2, 3, 4]
-y = [0, 2, 4, 6, 8]
-
-labels = [
-    "체중 감소",
-    "대사 개선",
-    "만성질환 감소",
-    "의료비 절감",
-    "사회경제적 효과"
-]
-
-fig, ax = plt.subplots()
-ax.plot(x, y, marker='o')
-
-ax.set_xticks(x)
-ax.set_xticklabels(labels, rotation=30)
-ax.set_ylabel("파급 효과 강도 (개념적)")
-ax.set_title("비만치료제의 나비효과 흐름")
-
-st.pyplot(fig)
-
-# 탐구용 해석
-st.markdown("## 🧪 탐구 보고서용 핵심 해석")
-
-st.markdown("""
-- 비만치료제의 1차 효과는 **식욕 억제와 체중 감소**이지만  
-- 2차적으로는 **대사 항상성 회복**,  
-- 3차적으로는 **만성질환 구조 변화**,  
-- 최종적으로는 **사회적 비용과 문화 인식의 변화**로 확장된다.
-
-이는 *작은 생물학적 개입이 거대한 사회적 결과로 증폭되는 전형적인 나비효과 사례*로 해석할 수 있다.
-""")
-
-st.success("📘 생명과학·의학·사회 융합 탐구 주제로 바로 사용 가능!")
+if st.button("🎶 소리 생성하기"):
+    with st.spinner("소리를 만드는 중..."):
+        wav_bytes = digits_to_wav_bytes(pi_decimals)
+    st.audio(wav_bytes, format="audio/wav")
+    st.download_button(
+        label="⬇️ WAV 파일 다운로드",
+        data=wav_bytes,
+        file_name=f"pi_{digits_count}digits_music.wav",
+        mime="audio/wav",
+    )
 
