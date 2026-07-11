@@ -1,4 +1,6 @@
 import streamlit as st
+import matplotlib
+matplotlib.use('Agg')          # ← 이 줄을 제일 위에 추가 (가장 중요!)
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -78,4 +80,4 @@ if st.button("🔬 Binding Score 계산하기", type="primary"):
         
         st.success("분석 완료! RNA 서열 변화가 유전자 조절에 미치는 영향을 확인했습니다.")
 
-st.caption("생기부 활동으로 개발한 Streamlit 웹 앱입니다. 실제 연구에서는 RNAhybrid, ViennaRNA 등의 전문 도구를 사용합니다.")
+st.caption("생기부 활동으로 개발한 Streamlit 웹 앱입니다.")
